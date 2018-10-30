@@ -10,6 +10,7 @@ import (
 	"github.com/prometheus/common/log"
 	"github.com/prometheus/common/version"
 	"gopkg.in/alecthomas/kingpin.v2"
+	"time"
 )
 
 
@@ -49,8 +50,9 @@ func main() {
 
 	log.Infoln("Starting alauda monitor exporter", version.Info())
 	log.Infoln("Build context", version.BuildContext())
+	rd := rand.New(rand.NewSource(time.Now().UnixNano()))
 
-	openFileNums.With(prometheus.Labels{"name":"k8s-furion", "message":"i saw the world"}).Set(float64(rand.Float64()))
+	openFileNums.With(prometheus.Labels{"name":"k8s-furion", "message":"i saw the world"}).Set(rd.Float64())
 	yxliHttpRequestCount.WithLabelValues("/furion/gp").Inc()
 
 	http.Handle(*metricsPath, promhttp.Handler())
