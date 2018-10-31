@@ -4,6 +4,7 @@ package main
 import (
 	"net/http"
 	_ "net/http/pprof"
+	"math/rand"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/log"
@@ -14,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 )
 
 
@@ -60,12 +62,13 @@ func (g *GlobalServiceDiagnose) Collect(ch chan<- prometheus.Metric) {
 */
 func (g *GlobalServiceDiagnose) healthCheck ()  *map[string]diagnoseKVPair{
 	res := make(map[string]diagnoseKVPair)
+	rd := rand.New(rand.NewSource(time.Now().UnixNano()))
 	furionDiag := diagnoseKVPair{
-		"health": "1",
+		"health": strconv.FormatFloat(rd.Float64(), 'E', -1, 64),
 		"message": "everything is ok",
 	}
 	jakiroDiag := diagnoseKVPair{
-		"health": "1",
+		"health": strconv.FormatFloat(rd.Float64(), 'E', -1, 64),
 		"message": "everything is bad",
 	}
 	res["phoenix"] = furionDiag
