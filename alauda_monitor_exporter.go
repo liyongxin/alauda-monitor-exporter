@@ -4,7 +4,7 @@ package main
 import (
 	"net/http"
 	_ "net/http/pprof"
-	"math/rand"
+	//"math/rand"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/log"
@@ -14,7 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
+	//"strconv"
 	"time"
 )
 
@@ -25,11 +25,11 @@ type GlobalServiceDiagnose struct{
 	healthDesc  *prometheus.Desc
 }
 
-type diagnoseKVPair map[string]string
-var componenetList = map[string] string{
+type diagnoseKVPair map[string]interface{}
+/*var componenetList = map[string] string{
 	"furion": "http://k8s-furion:8080",
 	"jakiro": "http://k8s-jakiro",
-}
+}*/
 
 // Describe simply sends the two Descs in the struct to the channel.
 func (g *GlobalServiceDiagnose) Describe(ch chan<- *prometheus.Desc) {
@@ -37,21 +37,17 @@ func (g *GlobalServiceDiagnose) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (g *GlobalServiceDiagnose) Collect(ch chan<- prometheus.Metric) {
-	diag := g.healthCheck()
-	for comp, res := range *diag {
-		health , err := strconv.ParseFloat(res["health"], 64)
-		if err != nil {
-			panic(err)
-		}
-		ch <- prometheus.MustNewConstMetric(
-			g.healthDesc,
-			prometheus.GaugeValue,
-			float64(health),
-			comp,
-			res["message"],
-		)
-	}
+	diagMsg := g.healthCheck()
+//	value,_:=diag["health"].(string)
+	//	health , err := strconv.ParseFloat(value, 64)
 
+	ch <- prometheus.MustNewConstMetric(
+		g.healthDesc,
+		prometheus.GaugeValue,
+		diagMsg.status,
+		g.serviceName,
+		diagMsg.details,
+	)
 }
 
 /*
@@ -60,34 +56,58 @@ func (g *GlobalServiceDiagnose) Collect(ch chan<- prometheus.Metric) {
 	"jakiro": {"health": 0, "message": "everything is bad"}
 }
 */
-func (g *GlobalServiceDiagnose) healthCheck ()  *map[string]diagnoseKVPair{
-	res := make(map[string]diagnoseKVPair)
-	rd := rand.New(rand.NewSource(time.Now().UnixNano()))
-	furionDiag := diagnoseKVPair{
-		"health": strconv.FormatFloat(rd.Float64(), 'E', -1, 64),
-		"message": "everything is ok",
+func (g *GlobalServiceDiagnose) healthCheck ()  *diagnoseMsg{
+	diagRes := HttpGet(g.diagnoseUrl)
+	res := &diagnoseMsg{}
+	res.status = 0
+	if diagRes.status == "OK" {
+		res.status = 1
 	}
-	jakiroDiag := diagnoseKVPair{
-		"health": strconv.FormatFloat(rd.Float64(), 'E', -1, 64),
-		"message": "everything is bad",
-	}
-	res["phoenix"] = furionDiag
-	res["jakiro"] = jakiroDiag
-	return &res
+	res.details = diagRes.detailStr
+	return res
 }
 
-func HttpGet(globalName string)  *diagnoseKVPair {
-	url := componenetList[globalName]
-	resp, err := http.Get(url)
+type diagnoseRes struct {
+	status string
+	details []map[string]string
+	detailStr string
+}
+
+type diagnoseMsg struct {
+	status float64
+	details string
+}
+
+func HttpGet(url string)  (res *diagnoseRes){
+	res = &diagnoseRes{}
+	defer func() {
+		if err := recover();err != nil {
+			errMsg := fmt.Sprintf("get health check error,%v", err)
+			log.Errorln(errMsg)
+			res = &diagnoseRes{
+				status: "DANGER",
+				detailStr: errMsg,
+			}
+		}
+	}()
+
+	httpCLi := &http.Client{
+		Timeout: 15 * time.Second,
+	}
+	resp, err := httpCLi.Get(url)
 	defer resp.Body.Close()
 	if err != nil {
 		log.Errorln(err)
 	}
-	dm := make(diagnoseKVPair)
 	bts, _:= ioutil.ReadAll(resp.Body)
-	//fmt.Println(string(bytessa))
-	json.Unmarshal(bts, &dm)
-	return &dm
+
+	log.Debugln(string(bts))
+	err = json.Unmarshal(bts, res)
+	if err != nil {
+		log.Errorln(err)
+	}
+	res.detailStr = string(bts)
+	return res
 }
 
 func NewServiceDiagnoser(name, url string) *GlobalServiceDiagnose{
@@ -95,9 +115,9 @@ func NewServiceDiagnoser(name, url string) *GlobalServiceDiagnose{
 		serviceName: name,
 		diagnoseUrl: url,
 		healthDesc: prometheus.NewDesc(
-			"global_service_diagnose",
+			fmt.Sprintf("global_service_diagnose_%s",name),
 			fmt.Sprintf("global service %s diagnose.",name),
-			[]string{"global_service_name", "message"},
+			[]string{"path", "message"},
 			prometheus.Labels{"global_service_name": name, "url": url},
 		),
 	}
@@ -123,8 +143,12 @@ func main() {
 
 	//begin
 	phoenix := NewServiceDiagnoser("phoenix", "https://phoenix.alauda.cn/_diagnose")
+	jakiro := NewServiceDiagnoser("jakiro", "https://api.alauda.cn/_diagnose")
+	//furion := NewServiceDiagnoser("furion", "https://furion.alauda.cn:8443/_diagnose")
 	reg := prometheus.NewPedanticRegistry()
 	reg.MustRegister(phoenix)
+	reg.MustRegister(jakiro)
+	//reg.MustRegister(furion)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html>
 			<head><title>Alauda Monitor Exporter</title></head>

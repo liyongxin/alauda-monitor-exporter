@@ -7,11 +7,11 @@ import (
 	"io/ioutil"
 	//"github.com/bitly/go-simplejson"
 	"encoding/json"
-	"strconv"
+	"time"
 )
 
 var componenetList1 = map[string] string{
-	"furion": "http://k8s-furion:8080",
+	"furion": "https://phoenix.alauda.cn/_diagnose",
 	"jakiro": "http://k8s-jakiro",
 }
 
@@ -26,7 +26,10 @@ func HttpGet1(url string) (*map[string]interface{},error){
 		fmt.Println("d")
 	}()
 	dm := make(map[string]interface{})
-	res, err := http.Get(url)
+	httpCLi := &http.Client{
+		Timeout: 15 * time.Second,
+	}
+	res, err := httpCLi.Get(url)
 	defer res.Body.Close()
 	bytessa, _:= ioutil.ReadAll(res.Body)
 	fmt.Println(string(bytessa))
@@ -62,21 +65,7 @@ func Diagnose() {
 
 
 func main() {
-	type kvpair map[string]interface{}
-	bb := make(kvpair)
-	bb["key1"] = 1
-	bb["key2"] = "haha"
-	cc := make(map[string]kvpair)
-	cc["ckey"] = bb
-	var aa  []map[string]kvpair
-	aa = append(aa, cc)
-	fmt.Println(aa)
-	//Diagnose()
-	int1, _ := strconv.Atoi("21")
-	sas := float64(int1)
-	fmt.Println(sas)
-
-	fmt.Println(strconv.ParseFloat("22", 64))
+	Diagnose()
 	/*data, err := simplejson.NewJson(body)
 	if err != nil {
 		fmt.Println(err)
