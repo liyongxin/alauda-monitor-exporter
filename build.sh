@@ -10,5 +10,6 @@ deleteImageId=$(docker images |awk '{print $3}'|sed -n '3p')
 echo "image id is $imageId"
 docker tag $imageId index.alauda.cn/yxli/alauda-monitor-exporter
 docker push index.alauda.cn/yxli/alauda-monitor-exporter
+set +e
 docker rm `docker ps -aq`
 docker rmi $imageId $deleteImageId

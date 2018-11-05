@@ -4,7 +4,6 @@ package main
 import (
 	"net/http"
 	_ "net/http/pprof"
-	//"math/rand"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/log"
@@ -14,26 +13,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	//"strconv"
 	"time"
 )
 
 
 type GlobalServiceDiagnose struct{
-	serviceName string
-	diagnoseUrl string
-	healthDesc  *prometheus.Desc
+	ServiceName string
+	DiagnoseUrl string
+	HealthDesc  *prometheus.Desc
 }
 
-type diagnoseKVPair map[string]interface{}
-/*var componenetList = map[string] string{
-	"furion": "http://k8s-furion:8080",
-	"jakiro": "http://k8s-jakiro",
-}*/
 
 // Describe simply sends the two Descs in the struct to the channel.
 func (g *GlobalServiceDiagnose) Describe(ch chan<- *prometheus.Desc) {
-	ch <- g.healthDesc
+	ch <- g.HealthDesc
 }
 
 func (g *GlobalServiceDiagnose) Collect(ch chan<- prometheus.Metric) {
@@ -42,11 +35,11 @@ func (g *GlobalServiceDiagnose) Collect(ch chan<- prometheus.Metric) {
 	//	health , err := strconv.ParseFloat(value, 64)
 
 	ch <- prometheus.MustNewConstMetric(
-		g.healthDesc,
+		g.HealthDesc,
 		prometheus.GaugeValue,
-		diagMsg.status,
-		g.serviceName,
-		diagMsg.details,
+		diagMsg.Code,
+		g.ServiceName,
+		diagMsg.Status,
 	)
 }
 
@@ -57,25 +50,28 @@ func (g *GlobalServiceDiagnose) Collect(ch chan<- prometheus.Metric) {
 }
 */
 func (g *GlobalServiceDiagnose) healthCheck ()  *diagnoseMsg{
-	diagRes := HttpGet(g.diagnoseUrl)
+	diagRes := HttpGet(g.DiagnoseUrl)
+	log.Errorln(diagRes)
 	res := &diagnoseMsg{}
-	res.status = 0
-	if diagRes.status == "OK" {
-		res.status = 1
+	res.Code = 0
+	if diagRes.Status == "OK" {
+		res.Code = 1
 	}
-	res.details = diagRes.detailStr
+	res.Status = diagRes.Status
+	res.Details = diagRes.DetailStr
 	return res
 }
 
 type diagnoseRes struct {
-	status string
-	details []map[string]string
-	detailStr string
+	Status string
+	Details []map[string]string
+	DetailStr string
 }
 
 type diagnoseMsg struct {
-	status float64
-	details string
+	Code float64
+	Status string
+	Details string
 }
 
 func HttpGet(url string)  (res *diagnoseRes){
@@ -84,44 +80,59 @@ func HttpGet(url string)  (res *diagnoseRes){
 		if err := recover();err != nil {
 			errMsg := fmt.Sprintf("get health check error,%v", err)
 			log.Errorln(errMsg)
-			res = &diagnoseRes{
-				status: "DANGER",
-				detailStr: errMsg,
-			}
+			res.Status = "DANGER"
+			res.DetailStr = errMsg
 		}
 	}()
 
 	httpCLi := &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout: 3 * time.Second,
 	}
 	resp, err := httpCLi.Get(url)
+	if resp == nil && err != nil{
+		log.Errorln(fmt.Sprintf("get health check error,%v", err))
+		res.Status = "DANGER"
+		res.DetailStr = fmt.Sprintf("get health check error,%v", err)
+		return res
+	}
 	defer resp.Body.Close()
 	if err != nil {
 		log.Errorln(err)
 	}
 	bts, _:= ioutil.ReadAll(resp.Body)
 
-	log.Debugln(string(bts))
 	err = json.Unmarshal(bts, res)
 	if err != nil {
 		log.Errorln(err)
 	}
-	res.detailStr = string(bts)
+	res.DetailStr = string(bts)
 	return res
 }
 
 func NewServiceDiagnoser(name, url string) *GlobalServiceDiagnose{
 	return &GlobalServiceDiagnose{
-		serviceName: name,
-		diagnoseUrl: url,
-		healthDesc: prometheus.NewDesc(
+		ServiceName: name,
+		DiagnoseUrl: url,
+		HealthDesc: prometheus.NewDesc(
 			fmt.Sprintf("global_service_diagnose_%s",name),
 			fmt.Sprintf("global service %s diagnose.",name),
-			[]string{"path", "message"},
-			prometheus.Labels{"global_service_name": name, "url": url},
+			[]string{"global_service_name", "status"},
+			prometheus.Labels{"url": url},
 		),
 	}
 }
+
+func MetricCreator() *prometheus.Registry {
+	phoenix := NewServiceDiagnoser("phoenix", "https://phoenix.alauda.cn/_diagnose")
+	furion := NewServiceDiagnoser("furion", "https://furion.alauda.cn:8443/_diagnose")
+	furion2 := NewServiceDiagnoser("furion2", "https://furion2.alauda.cn:8443/_diagnose")
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(phoenix)
+	reg.MustRegister(furion)
+	reg.MustRegister(furion2)
+	return reg
+}
+
 
 func init() {
 	prometheus.MustRegister(version.NewCollector("alauda_monitor_exporter"))
@@ -142,13 +153,7 @@ func main() {
 	log.Infoln("Build context", version.BuildContext())
 
 	//begin
-	phoenix := NewServiceDiagnoser("phoenix", "https://phoenix.alauda.cn/_diagnose")
-	jakiro := NewServiceDiagnoser("jakiro", "https://api.alauda.cn/_diagnose")
-	//furion := NewServiceDiagnoser("furion", "https://furion.alauda.cn:8443/_diagnose")
-	reg := prometheus.NewPedanticRegistry()
-	reg.MustRegister(phoenix)
-	reg.MustRegister(jakiro)
-	//reg.MustRegister(furion)
+
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html>
 			<head><title>Alauda Monitor Exporter</title></head>
