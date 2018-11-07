@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"time"
+	"sync"
 )
 
 
@@ -23,116 +24,121 @@ type GlobalServiceDiagnose struct{
 	HealthDesc  *prometheus.Desc
 }
 
+type diagnoseRes struct {
+	Name string
+	Url string
+	Code float64
+	Status string  `json:"status"`
+	Details []map[string]string `json:"details"`
+	DetailStr string
+}
 
-// Describe simply sends the two Descs in the struct to the channel.
+var  CompList  = map[string]string {
+	"furion" : "https://furion.alauda.cn:8443/_diagnose",
+	"phoenix": "https://phoenix.alauda.cn/_diagnose",
+}
+
+// Describe simply sends Descs in the struct to the channel.
 func (g *GlobalServiceDiagnose) Describe(ch chan<- *prometheus.Desc) {
 	ch <- g.HealthDesc
 }
 
 func (g *GlobalServiceDiagnose) Collect(ch chan<- prometheus.Metric) {
-	diagMsg := g.healthCheck()
-//	value,_:=diag["health"].(string)
-	//	health , err := strconv.ParseFloat(value, 64)
-
-	ch <- prometheus.MustNewConstMetric(
-		g.HealthDesc,
-		prometheus.GaugeValue,
-		diagMsg.Code,
-		g.ServiceName,
-		diagMsg.Status,
-	)
+	diagRes := g.healthCheck()
+	for _, res := range *diagRes {
+		ch <- prometheus.MustNewConstMetric(
+			g.HealthDesc,
+			prometheus.GaugeValue,
+			res.Code,
+			res.Status,
+			res.DetailStr,
+		)
+	}
 }
 
 /*
-{
-	"furion": {"health": 1, "message": "everything is ok"},
-	"jakiro": {"health": 0, "message": "everything is bad"}
-}
+{"status":"OK","details":[{"status":"OK","name":"DATABASE"}]}
 */
-func (g *GlobalServiceDiagnose) healthCheck ()  *diagnoseMsg{
-	diagRes := HttpGet(g.DiagnoseUrl)
-	log.Errorln(diagRes)
-	res := &diagnoseMsg{}
-	res.Code = 0
-	if diagRes.Status == "OK" {
-		res.Code = 1
+func (g *GlobalServiceDiagnose) healthCheck ()  *[]diagnoseRes{
+	var wg sync.WaitGroup
+	resCh := make(chan diagnoseRes, len(CompList))
+
+	for compName, compUrl := range CompList {
+		go HttpGet(compName, compUrl, &wg, &resCh)
+		wg.Add(1)
 	}
-	res.Status = diagRes.Status
-	res.Details = diagRes.DetailStr
-	return res
+
+	wg.Wait()
+	close(resCh)
+
+	var res  []diagnoseRes
+
+	for diagRes := range resCh {
+		if diagRes.Status == "DANGER" {
+			diagRes.Code = -1
+		}else if diagRes.Status == "ERROR"{
+			diagRes.Code = 0
+		}else {
+			diagRes.Code = 1
+		}
+		res = append(res, diagRes)
+	}
+	return &res
 }
 
-type diagnoseRes struct {
-	Status string
-	Details []map[string]string
-	DetailStr string
-}
-
-type diagnoseMsg struct {
-	Code float64
-	Status string
-	Details string
-}
-
-func HttpGet(url string)  (res *diagnoseRes){
-	res = &diagnoseRes{}
+func HttpGet(name, url string, wg *sync.WaitGroup, ch *chan diagnoseRes) {
+	res := diagnoseRes{}
+	defer wg.Done()
 	defer func() {
 		if err := recover();err != nil {
 			errMsg := fmt.Sprintf("get health check error,%v", err)
 			log.Errorln(errMsg)
+			res.Name = name
 			res.Status = "DANGER"
 			res.DetailStr = errMsg
+			*ch <- res
 		}
 	}()
 
 	httpCLi := &http.Client{
-		Timeout: 3 * time.Second,
+		Timeout: 4 * time.Second,
 	}
 	resp, err := httpCLi.Get(url)
 	if resp == nil && err != nil{
-		log.Errorln(fmt.Sprintf("get health check error,%v", err))
+		errMsg := fmt.Sprintf("get health check error,%v", err)
+		log.Errorln(errMsg)
+		res.Name = name
 		res.Status = "DANGER"
-		res.DetailStr = fmt.Sprintf("get health check error,%v", err)
-		return res
+		res.DetailStr = errMsg
+		*ch <- res
+		return
 	}
 	defer resp.Body.Close()
 	if err != nil {
 		log.Errorln(err)
 	}
 	bts, _:= ioutil.ReadAll(resp.Body)
-
-	err = json.Unmarshal(bts, res)
+	err = json.Unmarshal(bts, &res)
 	if err != nil {
 		log.Errorln(err)
 	}
+	res.Name = name
 	res.DetailStr = string(bts)
-	return res
+	*ch <- res
 }
 
-func NewServiceDiagnoser(name, url string) *GlobalServiceDiagnose{
+func registryDiagnoser(name, url string) *GlobalServiceDiagnose{
 	return &GlobalServiceDiagnose{
 		ServiceName: name,
 		DiagnoseUrl: url,
 		HealthDesc: prometheus.NewDesc(
-			fmt.Sprintf("global_service_diagnose_%s",name),
-			fmt.Sprintf("global service %s diagnose.",name),
-			[]string{"global_service_name", "status"},
-			prometheus.Labels{"url": url},
+			"global_service_diagnose",
+			"global service diagnose",
+			[]string{"status", "details"},
+			prometheus.Labels{"global_service_name": name, "url": url},
 		),
 	}
 }
-
-func MetricCreator() *prometheus.Registry {
-	phoenix := NewServiceDiagnoser("phoenix", "https://phoenix.alauda.cn/_diagnose")
-	furion := NewServiceDiagnoser("furion", "https://furion.alauda.cn:8443/_diagnose")
-	furion2 := NewServiceDiagnoser("furion2", "https://furion2.alauda.cn:8443/_diagnose")
-	reg := prometheus.NewPedanticRegistry()
-	reg.MustRegister(phoenix)
-	reg.MustRegister(furion)
-	reg.MustRegister(furion2)
-	return reg
-}
-
 
 func init() {
 	prometheus.MustRegister(version.NewCollector("alauda_monitor_exporter"))
@@ -163,6 +169,12 @@ func main() {
 			</body>
 			</html>`))
 	})
+
+	reg := prometheus.NewPedanticRegistry()
+
+	for name, url := range CompList{
+		reg.MustRegister(registryDiagnoser(name, url))
+	}
 
 	gatherers := prometheus.Gatherers{
 		prometheus.DefaultGatherer,

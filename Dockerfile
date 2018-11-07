@@ -14,6 +14,6 @@ WORKDIR /
 COPY --from=builder /go/src/alauda-monitor-exporter .
 
 RUN chmod +x /alauda_monitor_exporter
-EXPOSE 8888
+EXPOSE 6666
 
 CMD ["/alauda_monitor_exporter"]
