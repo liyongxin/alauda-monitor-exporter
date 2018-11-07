@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"os"
 	"time"
-	"sync"
 )
 
 
@@ -25,8 +24,6 @@ type GlobalServiceDiagnose struct{
 }
 
 type diagnoseRes struct {
-	Name string
-	Url string
 	Code float64
 	Status string  `json:"status"`
 	Details []map[string]string `json:"details"`
@@ -36,6 +33,8 @@ type diagnoseRes struct {
 var  CompList  = map[string]string {
 	"furion" : "https://furion.alauda.cn:8443/_diagnose",
 	"phoenix": "https://phoenix.alauda.cn/_diagnose",
+	"architect": "http://architect.alauda.cn:8080/_diagnose",
+	"windranger": "https://windranger.alauda.cn/_diagnose",
 }
 
 // Describe simply sends Descs in the struct to the channel.
@@ -44,59 +43,42 @@ func (g *GlobalServiceDiagnose) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (g *GlobalServiceDiagnose) Collect(ch chan<- prometheus.Metric) {
-	diagRes := g.healthCheck()
-	for _, res := range *diagRes {
-		ch <- prometheus.MustNewConstMetric(
-			g.HealthDesc,
-			prometheus.GaugeValue,
-			res.Code,
-			res.Status,
-			res.DetailStr,
-		)
-	}
+	diagMsg := g.healthCheck()
+
+	ch <- prometheus.MustNewConstMetric(
+		g.HealthDesc,
+		prometheus.GaugeValue,
+		diagMsg.Code,
+		diagMsg.Status,
+		diagMsg.DetailStr,
+	)
 }
 
 /*
 {"status":"OK","details":[{"status":"OK","name":"DATABASE"}]}
 */
-func (g *GlobalServiceDiagnose) healthCheck ()  *[]diagnoseRes{
-	var wg sync.WaitGroup
-	resCh := make(chan diagnoseRes, len(CompList))
-
-	for compName, compUrl := range CompList {
-		go HttpGet(compName, compUrl, &wg, &resCh)
-		wg.Add(1)
+func (g *GlobalServiceDiagnose) healthCheck ()  *diagnoseRes{
+	diagRes := HttpGet(g.DiagnoseUrl)
+	if diagRes.Status == "DANGER" {
+		diagRes.Code = 0
+	}else if  diagRes.Status == "EERROR" {
+		diagRes.Code = 0
+	}else {
+		diagRes.Code = 1
 	}
-
-	wg.Wait()
-	close(resCh)
-
-	var res  []diagnoseRes
-
-	for diagRes := range resCh {
-		if diagRes.Status == "DANGER" {
-			diagRes.Code = -1
-		}else if diagRes.Status == "ERROR"{
-			diagRes.Code = 0
-		}else {
-			diagRes.Code = 1
-		}
-		res = append(res, diagRes)
-	}
-	return &res
+	return diagRes
 }
 
-func HttpGet(name, url string, wg *sync.WaitGroup, ch *chan diagnoseRes) {
-	res := diagnoseRes{}
-	defer wg.Done()
+
+func HttpGet(url string)  (res *diagnoseRes){
+	res = &diagnoseRes{}
 	defer func() {
 		if err := recover();err != nil {
 			errMsg := fmt.Sprintf("get health check error,%v", err)
 			log.Errorln(errMsg)
-			res.Name = name
 			res.Status = "DANGER"
 			res.DetailStr = errMsg
-			*ch <- res
+			return
 		}
 	}()
 
@@ -107,25 +89,25 @@ func HttpGet(name, url string, wg *sync.WaitGroup, ch *chan diagnoseRes) {
 	if resp == nil && err != nil{
 		errMsg := fmt.Sprintf("get health check error,%v", err)
 		log.Errorln(errMsg)
-		res.Name = name
 		res.Status = "DANGER"
 		res.DetailStr = errMsg
-		*ch <- res
-		return
+		return res
 	}
 	defer resp.Body.Close()
 	if err != nil {
 		log.Errorln(err)
 	}
 	bts, _:= ioutil.ReadAll(resp.Body)
-	err = json.Unmarshal(bts, &res)
+
+	err = json.Unmarshal(bts, res)
 	if err != nil {
 		log.Errorln(err)
 	}
-	res.Name = name
 	res.DetailStr = string(bts)
-	*ch <- res
+	return res
 }
+
+
 
 func registryDiagnoser(name, url string) *GlobalServiceDiagnose{
 	return &GlobalServiceDiagnose{
